@@ -2,9 +2,50 @@
 
 from __future__ import annotations
 
+import json
+import platform
 import shutil
 from datetime import datetime
 from pathlib import Path
+
+_CONFIG_PATH = Path(__file__).parent / "config.json"
+
+
+def _load_last_dir() -> Path:
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        p = Path(data["last_directory"])
+        if p.is_dir():
+            return p
+    except Exception:
+        pass
+    return Path.home()
+
+
+def _save_last_dir(path: Path) -> None:
+    try:
+        try:
+            cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+        cfg["last_directory"] = str(path)
+        _CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+_WIN_HIDDEN = 0x2   # FILE_ATTRIBUTE_HIDDEN
+_WIN_SYSTEM = 0x4   # FILE_ATTRIBUTE_SYSTEM
+
+
+def _is_hidden_system(path: Path) -> bool:
+    """True when path carries both HIDDEN and SYSTEM Windows attributes."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        attrs = path.stat().st_file_attributes
+        return bool(attrs & _WIN_HIDDEN) and bool(attrs & _WIN_SYSTEM)
+    except (OSError, AttributeError):
+        return False
 
 from textual import on
 from textual.app import ComposeResult
@@ -29,19 +70,66 @@ def _fmt_date(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%d.%m %H:%M")
 
 
+# ── Godot 4 node list ─────────────────────────────────────────────────────────
+
+_GODOT_NODES: list[str] = [
+    "Node", "Node2D", "Node3D",
+    "AnimationPlayer", "AnimationTree",
+    "AudioStreamPlayer", "AudioStreamPlayer2D", "AudioStreamPlayer3D",
+    "Camera2D", "Camera3D",
+    "CanvasLayer", "CanvasModulate",
+    "CharacterBody2D", "CharacterBody3D",
+    "CollisionShape2D", "CollisionShape3D", "CollisionPolygon2D",
+    "Control", "CPUParticles2D", "CPUParticles3D",
+    "DirectionalLight3D",
+    "GPUParticles2D", "GPUParticles3D",
+    "GraphEdit", "GridContainer",
+    "HBoxContainer", "HScrollBar", "HSlider", "HSplitContainer",
+    "HTTPRequest",
+    "ItemList",
+    "Label", "Light2D", "Line2D", "LineEdit",
+    "MarginContainer", "MeshInstance3D",
+    "MultiplayerSpawner", "MultiplayerSynchronizer",
+    "NavigationAgent2D", "NavigationAgent3D",
+    "NavigationRegion2D", "NavigationRegion3D",
+    "NinePatchRect", "OmniLight3D",
+    "PanelContainer", "Path2D", "Path3D",
+    "PathFollow2D", "PathFollow3D",
+    "Point2D", "Polygon2D", "PopupMenu", "ProgressBar",
+    "RayCast2D", "RayCast3D", "RichTextLabel",
+    "RigidBody2D", "RigidBody3D",
+    "ScrollContainer",
+    "ShapeCast2D", "ShapeCast3D",
+    "Skeleton2D", "Skeleton3D",
+    "SpotLight3D", "SpringArm3D",
+    "Sprite2D", "Sprite3D",
+    "StaticBody2D", "StaticBody3D",
+    "SubViewport", "SubViewportContainer",
+    "TabBar", "TabContainer",
+    "TextEdit", "TextureButton", "TextureProgressBar", "TextureRect",
+    "TileMap", "Timer", "TouchScreenButton", "Tree",
+    "VBoxContainer", "VScrollBar", "VSlider", "VSplitContainer",
+    "Viewport",
+    "VisibleOnScreenNotifier2D", "VisibleOnScreenNotifier3D",
+    "Window", "WorldEnvironment",
+    "Resource", "RefCounted", "Object",
+]
+
+
 # ── File panel ────────────────────────────────────────────────────────────────
 
 class FilePanel(Vertical):
     """Single Far Manager–style file browser panel."""
 
     BINDINGS = [
-        Binding("backspace", "go_up",        "Up",     show=False),
-        Binding("f7",        "mkdir",         "MkDir",  show=False),
-        Binding("f6",        "rename_prompt", "Rename", show=False),
-        Binding("delete",    "delete_entry",  "Delete", show=False),
-        Binding("ctrl+c",    "copy_prompt",   "Copy",   show=False),
-        Binding("ctrl+m",    "move_prompt",   "Move",   show=False),
-        Binding("ctrl+f",    "search_file",   "Find",   show=False),
+        Binding("backspace", "go_up",        "Up",       show=False),
+        Binding("f4",        "new_file",      "New File", show=False),
+        Binding("f7",        "mkdir",         "MkDir",    show=False),
+        Binding("f6",        "rename_prompt", "Rename",   show=False),
+        Binding("delete",    "delete_entry",  "Delete",   show=False),
+        Binding("ctrl+c",    "copy_prompt",   "Copy",     show=False),
+        Binding("ctrl+m",    "move_prompt",   "Move",     show=False),
+        Binding("ctrl+f",    "search_file",   "Find",     show=False),
     ]
 
     current_path: reactive[Path] = reactive(Path.cwd())
@@ -86,12 +174,13 @@ class FilePanel(Vertical):
     # ── Directory listing ─────────────────────────────────────────────────────
 
     def watch_current_path(self, path: Path) -> None:
+        _save_last_dir(path)
         self._refresh_listing()
 
     def _refresh_listing(self) -> None:
         try:
             entries = sorted(
-                self.current_path.iterdir(),
+                (p for p in self.current_path.iterdir() if not _is_hidden_system(p)),
                 key=lambda p: (not p.is_dir(), p.name.lower()),
             )
         except PermissionError:
@@ -127,26 +216,53 @@ class FilePanel(Vertical):
                 label_text = f"  [{p.name}]"
                 css_class = "dir"
             else:
-                try:
-                    stat = p.stat()
-                    size = _fmt_size(stat.st_size)
-                    date = _fmt_date(stat.st_mtime)
-                except OSError:
-                    size, date = "?", "?"
-                label_text = f"  {p.name:<18} {size:>5} {date}"
+                label_text = f"  {p.name}"
                 css_class = "file"
             lst.append(ListItem(Label(label_text, markup=False), classes=css_class))
+
+        self.call_after_refresh(self._highlight_first)
+
+    def _highlight_first(self) -> None:
+        """Step 1 (after repopulate): set ListView index to 0.
+        This posts a Highlighted event; step 2 fires after it's processed."""
+        lst = self._list
+        if not lst.query("ListItem"):
+            return
+        lst.index = 0
+        self.call_after_refresh(self._apply_first_highlight)
+
+    def _apply_first_highlight(self) -> None:
+        """Step 2: directly paint cyan on items[0].
+        Runs after all Highlighted events from lst.index=0 have processed,
+        so it is guaranteed to be the last write to items[0]'s colors."""
+        items = list(self._list.query("ListItem"))
+        if not items:
+            return
+        item = items[0]
+        self._highlighted_item = item
+        item.styles.background = "#00ffff"
+        for lbl in item.query("Label"):
+            lbl.styles.background = "#00ffff"
+            lbl.styles.color = "#000000"
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        self._refresh_listing()
+        start = _load_last_dir()
+        if start != self.current_path:
+            self.current_path = start   # triggers watch_current_path → _refresh_listing
+        else:
+            self._refresh_listing()
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
     @on(ListView.Highlighted)
     def _on_item_highlighted(self, event: ListView.Highlighted) -> None:
-        # Reset previous item to CSS-controlled colors
+        # item=None fires when lst.clear() runs; ignore it so it can't undo
+        # a highlight that _highlight_first already applied.
+        if event.item is None:
+            return
+
         prev = self._highlighted_item
         if prev is not None:
             try:
@@ -158,13 +274,10 @@ class FilePanel(Vertical):
                 pass
 
         self._highlighted_item = event.item
-
-        # Apply cyan highlight inline (bypasses CSS specificity issues)
-        if event.item is not None:
-            event.item.styles.background = "#00ffff"
-            for lbl in event.item.query("Label"):
-                lbl.styles.background = "#00ffff"
-                lbl.styles.color = "#000000"
+        event.item.styles.background = "#00ffff"
+        for lbl in event.item.query("Label"):
+            lbl.styles.background = "#00ffff"
+            lbl.styles.color = "#000000"
 
     @on(ListView.Selected)
     def _on_selected(self, event: ListView.Selected) -> None:
@@ -204,6 +317,37 @@ class FilePanel(Vertical):
         self._list.focus()
 
     # ── File operations ───────────────────────────────────────────────────────
+
+    def action_new_file(self) -> None:
+        self.app.push_screen(
+            InputDialog("New file:", ""),
+            lambda name: self._do_new_file(name) if name else None,
+        )
+
+    def _do_new_file(self, name: str) -> None:
+        if not name:
+            return
+        target = self.current_path / name
+        if name.endswith(".gd"):
+            self.app.push_screen(
+                ExtendsDialog(),
+                lambda extends: self._create_file(target, extends),
+            )
+        else:
+            self._create_file(target, None)
+
+    def _create_file(self, target: Path, extends: str | None) -> None:
+        if target.exists():
+            self.notify(f'"{target.name}" already exists.', severity="error")
+            return
+        content = f"extends {extends}\n" if extends else ""
+        try:
+            target.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._refresh_listing()
+        self.app.open_file(target)
 
     def action_mkdir(self) -> None:
         self.app.push_screen(
@@ -363,3 +507,118 @@ class ConfirmDialog(ModalScreen[bool]):
     def on_key(self, event) -> None:
         if event.key == "escape":
             self.dismiss(False)
+
+
+class ExtendsDialog(ModalScreen[str | None]):
+    """Searchable 'extends' picker shown when creating a new .gd file."""
+
+    DEFAULT_CSS = """
+    ExtendsDialog {
+        align: center middle;
+    }
+    ExtendsDialog #extends-dialog-box {
+        background: #000080;
+        border: solid #00ffff;
+        padding: 1 2;
+        width: 52;
+        height: auto;
+    }
+    ExtendsDialog #extends-dialog-box > Label {
+        color: white;
+        padding: 0;
+    }
+    ExtendsDialog #extends-dialog-box > Input {
+        border: solid #00aaaa;
+        background: #000000;
+        color: white;
+        margin-top: 1;
+    }
+    ExtendsDialog #extends-list {
+        height: 12;
+        background: #000080;
+        border: solid #00aaaa;
+        margin-top: 1;
+    }
+    ExtendsDialog #extends-list > ListItem {
+        background: #000080;
+        color: white;
+        height: 1;
+        padding: 0;
+    }
+    ExtendsDialog #extends-list > ListItem > Label {
+        height: 1;
+        padding: 0;
+        color: white;
+    }
+    ExtendsDialog #extends-list > ListItem.-highlight {
+        background: #00ffff;
+        color: #000000;
+    }
+    ExtendsDialog #extends-list > ListItem.-highlight > Label {
+        background: #00ffff;
+        color: #000000;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._all_items: list[str] = ["(without extends)"] + _GODOT_NODES
+        self._filtered:  list[str] = list(self._all_items)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="extends-dialog-box"):
+            yield Label("extends:")
+            yield Input(placeholder="Search node…", id="extends-search")
+            yield ListView(id="extends-list")
+
+    def on_mount(self) -> None:
+        self._repopulate()
+        self.query_one("#extends-search", Input).focus()
+
+    def _repopulate(self) -> None:
+        lst = self.query_one("#extends-list", ListView)
+        lst.clear()
+        for node in self._filtered:
+            lst.append(ListItem(Label(node, markup=False)))
+
+    @on(Input.Changed, "#extends-search")
+    def _on_search(self, event: Input.Changed) -> None:
+        q = event.value.lower()
+        self._filtered = [
+            n for n in self._all_items
+            if not q or q in n.lower()
+        ]
+        self._repopulate()
+
+    @on(Input.Submitted, "#extends-search")
+    def _on_submitted(self, _: Input.Submitted) -> None:
+        self._confirm()
+
+    @on(ListView.Selected, "#extends-list")
+    def _on_list_selected(self, _: ListView.Selected) -> None:
+        self._confirm()
+
+    def on_key(self, event) -> None:
+        lst = self.query_one("#extends-list", ListView)
+        if event.key == "down":
+            lst.action_cursor_down()
+            event.stop()
+        elif event.key == "up":
+            lst.action_cursor_up()
+            event.stop()
+
+    def action_cancel(self) -> None:
+        self.dismiss("Node")
+
+    def _confirm(self) -> None:
+        lst = self.query_one("#extends-list", ListView)
+        idx = lst.index
+        if idx is not None and 0 <= idx < len(self._filtered):
+            selected = self._filtered[idx]
+        elif self._filtered:
+            selected = self._filtered[0]
+        else:
+            selected = "Node"
+        self.dismiss(None if selected == "(without extends)" else selected)
