@@ -1,2 +1,5 @@
 .claude/*
 .git/*
+__pycache__/*
+config.json
+godot_api_*

@@ -220,6 +220,11 @@ class DekodeApp(App):
         self._load_api_version()
         self._load_api_data()
         self.call_after_refresh(self._check_first_launch)
+        from gdscript_parser import get_project_index
+        from file_panel import FilePanel
+        get_project_index().start_indexing(
+            self.query_one("#left-panel", FilePanel).current_path
+        )
 
     # ── Focus helpers ─────────────────────────────────────────────────────────
 
