@@ -61,14 +61,14 @@ Screen {
 /* ── File panel ─────────────────────────────────────────── */
 FilePanel {
     width: 35;
-    border: solid #00ffff;
+    border: solid #004488;
     background: #0000aa;
     color: white;
     padding: 0;
 }
 
 FilePanel:focus-within {
-    border: solid white;
+    border: solid #FFFF00;
 }
 
 FilePanel > ListView {
@@ -157,13 +157,13 @@ FilePanel > Input.visible {
 /* ── Editor container ───────────────────────────────────── */
 #editor-container {
     width: 1fr;
-    border: solid #00ffff;
+    border: solid #004488;
     background: #000000;
     layout: vertical;
 }
 
 #editor-container:focus-within {
-    border: solid white;
+    border: solid #FFFF00;
 }
 
 CodeEditor {
@@ -171,6 +171,9 @@ CodeEditor {
     background: #000000;
     color: white;
     padding: 0;
+    scrollbar-color: #004488;
+    scrollbar-background: #000000;
+    scrollbar-corner-color: #000000;
 }
 
 /* ── Search bar ─────────────────────────────────────────── */
@@ -238,8 +241,7 @@ SearchBar #search-info {
 #status-bar {
     height: 1;
     background: #000000;
-    color: #00aaaa;
-    padding: 0 1;
+    padding: 0;
 }
 
 /* ── Key bar (Far Manager function keys) ────────────────── */

@@ -87,13 +87,21 @@ class FarKeyBar(Static):
     """
 
     def render(self) -> Text:
-        text = Text(no_wrap=True, overflow="crop")
-        for num, label in _KEYBAR_KEYS:
-            n = len(num)
-            label_width = 8 - n          # each key block = 8 cols
-            text.append(num, style="bold black on bright_cyan")
-            text.append(f"{label:<{label_width}}", style="white on black")
+        text = Text(no_wrap=True, overflow="crop", end="")
+        total_w = self.size.width or 80
+        n_keys  = len(_KEYBAR_KEYS)
+        slot_w  = total_w // n_keys
+        extra   = total_w - slot_w * n_keys          # distribute remainder 1 col at a time
+        for i, (num, label) in enumerate(_KEYBAR_KEYS):
+            w       = slot_w + (1 if i < extra else 0)
+            num_len = len(num)
+            lbl_w   = max(1, w - num_len)
+            text.append(num,                    style="bold cyan on black")
+            text.append(f"{label:<{lbl_w}}",   style="white on black")
         return text
+
+    def on_resize(self, _) -> None:
+        self.refresh()
 
 
 # ── Inline search bar (inside editor container) ───────────────────────────────
@@ -154,10 +162,16 @@ class StatusBar(Static):
     StatusBar {
         height: 1;
         background: #000000;
-        color: #00aaaa;
-        padding: 0 1;
+        padding: 0;
     }
     """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._file_path:   Path | None = None
+        self._cursor:      str  = "Ln 1, Col 1"
+        self._modified:    bool = False
+        self._api_version: str  = ""
 
     def set_info(
         self,
@@ -167,11 +181,45 @@ class StatusBar(Static):
         active_panel: str,
         api_version: str = "",
     ) -> None:
-        name  = str(file_path) if file_path else "No file open"
-        mod   = " [*]" if modified else ""
-        panel = f"[{active_panel.upper()}]"
-        ver   = f"  │  GDScript {api_version}" if api_version else ""
-        self.update(f"{panel}  {name}{mod}  │  {cursor}{ver}")
+        self._file_path   = file_path
+        self._cursor      = cursor
+        self._modified    = modified
+        self._api_version = api_version
+        self.refresh()
+
+    def render(self) -> Text:
+        width = self.size.width or 80
+
+        # ── Left zone ─────────────────────────────────────────
+        left = Text(no_wrap=True, overflow="crop", end="")
+        if self._file_path:
+            left.append(str(self._file_path), style="#FFFFFF on #000000")
+        else:
+            left.append("No file open", style="#FFFFFF on #000000")
+        if self._modified:
+            left.append(" [*]", style="bold #FFFF00 on #000000")
+        left.append("  ", style="on #000000")
+        left.append("│", style="#444444 on #000000")
+        left.append("  ", style="on #000000")
+        left.append(self._cursor, style="#00FFFF on #000000")
+
+        # ── Right zone ────────────────────────────────────────
+        right = Text(no_wrap=True, overflow="crop", end="")
+        if self._api_version:
+            right.append(f"GDScript v{self._api_version}", style="#00FFFF on #000000")
+            right.append(" (Ctrl+G: change version)", style="#888888 on #000000")
+        else:
+            right.append("Ctrl+G: install GDScript", style="#888888 on #000000")
+        gap = max(0, width - len(left.plain) - len(right.plain))
+
+        result = Text(no_wrap=True, overflow="crop", end="")
+        result.append_text(left)
+        result.append(" " * gap, style="on #000000")
+        result.append_text(right)
+        return result
+
+    def on_resize(self, _) -> None:
+        self.refresh()
 
 
 # ── Main App ──────────────────────────────────────────────────────────────────
@@ -215,7 +263,6 @@ class DekodeApp(App):
         yield FarKeyBar(id="key-bar")
 
     def on_mount(self) -> None:
-        self.query_one("#editor-container").border_title = " No file "
         self._focus_files()
         self._load_api_version()
         self._load_api_data()
@@ -276,8 +323,6 @@ class DekodeApp(App):
     def _do_open(self, path: Path) -> None:
         editor = self.query_one("#editor", CodeEditor)
         if editor.load_file(path):
-            container = self.query_one("#editor-container")
-            container.border_title = f" {path.name} "
             self._focus_editor()
             self._refresh_status()
 
@@ -338,7 +383,16 @@ class DekodeApp(App):
     # ── Status refresh ────────────────────────────────────────────────────────
 
     def _refresh_status(self) -> None:
-        editor = self.query_one("#editor", CodeEditor)
+        editor    = self.query_one("#editor", CodeEditor)
+        container = self.query_one("#editor-container")
+        if editor.file_path:
+            name = editor.file_path.name
+            if editor.is_modified:
+                container.border_title = f" [bold #FFFF00]*{name}[/] "
+            else:
+                container.border_title = f" {name} "
+        else:
+            container.border_title = " No file "
         self.query_one("#status-bar", StatusBar).set_info(
             editor.file_path,
             editor.cursor_info,

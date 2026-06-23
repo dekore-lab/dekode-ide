@@ -79,7 +79,7 @@ _CLOSERS_ONLY = {")", "]", "}"}
 _DOS_THEME = TextAreaTheme(
     name="dos",
     base_style=Style.parse("white on black"),
-    gutter_style=Style.parse("bright_cyan on black"),
+    gutter_style=Style.parse("#4488AA on black"),
     cursor_style=Style.parse("black on bright_cyan"),
     cursor_line_style=Style.parse("on grey7"),
     bracket_matching_style=Style.parse("bold on dark_orange3"),
@@ -97,7 +97,7 @@ _DOS_THEME = TextAreaTheme(
 )
 
 # Separator style for the │ between line numbers and code
-_SEP_STYLE = Style.parse("bright_cyan on black")
+_SEP_STYLE = Style.parse("#4488AA on black")
 
 # ── Completion popup ──────────────────────────────────────────────────────────
 
