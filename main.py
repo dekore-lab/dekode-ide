@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.text import Text
@@ -22,6 +23,16 @@ from editor import CodeEditor
 from file_panel import ConfirmDialog, FilePanel, InputDialog
 
 _CFG = Path(__file__).parent / "config.json"
+
+
+@dataclass
+class TabState:
+    path:          Path
+    text:          str            = ""
+    is_modified:   bool           = False
+    cursor:        tuple[int,int] = field(default_factory=lambda: (0, 0))
+    file_info:     object         = None
+    extends_class: str            = ""
 
 
 def _fetch_versions_blocking() -> list[str]:
@@ -87,17 +98,20 @@ class FarKeyBar(Static):
     """
 
     def render(self) -> Text:
-        text = Text(no_wrap=True, overflow="crop", end="")
-        total_w = self.size.width or 80
-        n_keys  = len(_KEYBAR_KEYS)
-        slot_w  = total_w // n_keys
-        extra   = total_w - slot_w * n_keys          # distribute remainder 1 col at a time
+        text         = Text(no_wrap=True, overflow="crop", end="")
+        total_w      = self.size.width or 80
+        n_keys       = len(_KEYBAR_KEYS)
+        slot_w       = total_w // n_keys
+        extra        = total_w - slot_w * n_keys
+        panel        = getattr(self.app, "_active_panel", "files")
         for i, (num, label) in enumerate(_KEYBAR_KEYS):
+            if num == "4":
+                label = "New" if panel == "files" else "Files"
             w       = slot_w + (1 if i < extra else 0)
             num_len = len(num)
             lbl_w   = max(1, w - num_len)
-            text.append(num,                    style="bold cyan on black")
-            text.append(f"{label:<{lbl_w}}",   style="white on black")
+            text.append(num,               style="bold cyan on black")
+            text.append(f"{label:<{lbl_w}}", style="white on black")
         return text
 
     def on_resize(self, _) -> None:
@@ -153,6 +167,99 @@ class SearchBar(Horizontal):
     @property
     def replace_text(self) -> str:
         return self.query_one("#replace-input", Input).value
+
+
+# ── Tab bar ───────────────────────────────────────────────────────────────────
+
+class TabBar(Static):
+    DEFAULT_CSS = """
+    TabBar {
+        height: 1;
+        background: #000000;
+        padding: 0;
+    }
+    """
+
+    def _tab_slot(self, state: TabState) -> tuple[str, int]:
+        name    = ("*" if state.is_modified else "") + state.path.name
+        content = f" {name} "
+        return content, len(content) + 1   # +1 for trailing │
+
+    def _count_rows(self, tabs: list, width: int) -> int:
+        if not tabs:
+            return 1
+        pos = rows = 1
+        for state in tabs:
+            _, tw = self._tab_slot(state)
+            if pos + tw > width and pos > 1:
+                rows += 1
+                pos   = 1
+            pos += tw
+        return rows
+
+    def refresh_tabs(self) -> None:
+        tabs  = getattr(self.app, "_tabs", [])
+        width = self.size.width or 80
+        self.styles.height = max(1, self._count_rows(tabs, width))
+        self.refresh()
+
+    def render(self) -> Text:
+        app    = self.app
+        tabs   = getattr(app, "_tabs",       [])
+        active = getattr(app, "_active_tab", 0)
+        width  = self.size.width or 80
+
+        if not tabs:
+            return Text(" " * width, style="on #000000", end="")
+
+        result = Text(no_wrap=True, overflow="crop", end="")
+        row    = Text(end="")
+        row.append("│", style="#555555 on #000000")
+        pos    = 1
+
+        for i, state in enumerate(tabs):
+            content, tw = self._tab_slot(state)
+            if pos + tw > width and pos > 1:
+                row.append(" " * max(0, width - pos), style="on #000000")
+                result.append_text(row)
+                result.append("\n")
+                row = Text(end="")
+                row.append("│", style="#555555 on #000000")
+                pos = 1
+            if i == active:
+                row.append(content, style="bold #000000 on #FFFF00")
+            elif state.is_modified:
+                row.append(content, style="#FFFF00 on #000044")
+            else:
+                row.append(content, style="white on #000044")
+            row.append("│", style="#555555 on #000000")
+            pos += tw
+
+        row.append(" " * max(0, width - pos), style="on #000000")
+        result.append_text(row)
+        return result
+
+    def on_resize(self, _) -> None:
+        self.refresh_tabs()
+
+    def on_click(self, event) -> None:
+        app  = self.app
+        tabs = getattr(app, "_tabs", [])
+        if not tabs:
+            return
+        width      = self.size.width or 80
+        cx, cy     = event.x, event.y
+        pos        = 1
+        cur_row    = 0
+        for i, state in enumerate(tabs):
+            _, tw = self._tab_slot(state)
+            if pos + tw > width and pos > 1:
+                cur_row += 1
+                pos      = 1
+            if cur_row == cy and pos <= cx < pos + tw:
+                app._switch_tab(i)
+                return
+            pos += tw
 
 
 # ── Status bar ────────────────────────────────────────────────────────────────
@@ -231,18 +338,30 @@ class DekodeApp(App):
     CSS   = CSS
 
     BINDINGS = [
-        Binding("f1",     "show_help",         "Help",       show=False),
-        Binding("f2",     "save_file",          "Save",       show=False),
-        Binding("f3",     "toggle_fullscreen",  "Fullscreen", show=False),
-        Binding("f5",     "run_godot",          "Run",        show=False),
-        Binding("f8",     "stop_godot",         "Stop",       show=False),
-        Binding("f9",     "toggle_debug",       "Debug",      show=False),
-        Binding("f10",    "quit",               "Quit",       show=False),
-        Binding("tab",    "switch_panel",       "Switch",     show=False),
-        Binding("ctrl+q", "quit",               "Quit",       show=False),
-        Binding("ctrl+f", "open_search",        "Find",       show=False),
-        Binding("ctrl+g", "switch_api",         "API",        show=False),
-        Binding("escape", "close_search",       "Close",      show=False),
+        Binding("f1",     "show_help",        "Help",       show=False),
+        Binding("f2",     "save_file",         "Save",       show=False),
+        Binding("f3",     "toggle_fullscreen", "Fullscreen", show=False),
+        Binding("f4",     "context_f4",                      show=False),
+        Binding("f5",     "run_godot",         "Run",        show=False),
+        Binding("f8",     "stop_godot",        "Stop",       show=False),
+        Binding("f9",     "toggle_debug",      "Debug",      show=False),
+        Binding("f10",    "quit",              "Quit",       show=False),
+        Binding("ctrl+q", "quit",              "Quit",       show=False),
+        Binding("ctrl+f", "open_search",       "Find",       show=False),
+        Binding("ctrl+g", "switch_api",        "API",        show=False),
+        Binding("escape", "close_search",                    show=False),
+        Binding("alt+right", "tab_next",  show=False, priority=True),
+        Binding("alt+left",  "tab_prev",  show=False, priority=True),
+        Binding("alt+w",     "tab_close", show=False, priority=True),
+        Binding("alt+1",  "tab_go(1)",   show=False, priority=True),
+        Binding("alt+2",  "tab_go(2)",   show=False, priority=True),
+        Binding("alt+3",  "tab_go(3)",   show=False, priority=True),
+        Binding("alt+4",  "tab_go(4)",   show=False, priority=True),
+        Binding("alt+5",  "tab_go(5)",   show=False, priority=True),
+        Binding("alt+6",  "tab_go(6)",   show=False, priority=True),
+        Binding("alt+7",  "tab_go(7)",   show=False, priority=True),
+        Binding("alt+8",  "tab_go(8)",   show=False, priority=True),
+        Binding("alt+9",  "tab_go(9)",   show=False, priority=True),
     ]
 
     _active_panel:  str  = "files"
@@ -256,6 +375,7 @@ class DekodeApp(App):
         with Horizontal(id="main-area"):
             yield FilePanel(panel_id="left", id="left-panel")
             with Vertical(id="editor-container"):
+                yield TabBar(id="tab-bar")
                 yield CodeEditor(id="editor")
                 yield SearchBar(id="search-bar")
         yield DebugPanel(id="debug-panel")
@@ -263,6 +383,8 @@ class DekodeApp(App):
         yield FarKeyBar(id="key-bar")
 
     def on_mount(self) -> None:
+        self._tabs:       list[TabState] = []
+        self._active_tab: int            = 0
         self._focus_files()
         self._load_api_version()
         self._load_api_data()
@@ -272,6 +394,7 @@ class DekodeApp(App):
         get_project_index().start_indexing(
             self.query_one("#left-panel", FilePanel).current_path
         )
+        self.call_after_refresh(self._restore_tabs)
 
     # ── Focus helpers ─────────────────────────────────────────────────────────
 
@@ -279,17 +402,22 @@ class DekodeApp(App):
         self._active_panel = "files"
         self.query_one("#left-panel", FilePanel).query_one("ListView").focus()
         self._refresh_status()
+        self._refresh_keybar()
 
     def _focus_editor(self) -> None:
         self._active_panel = "editor"
         self.query_one("#editor", CodeEditor).focus()
         self._refresh_status()
+        self._refresh_keybar()
 
-    def action_switch_panel(self) -> None:
-        if self._active_panel == "files":
-            self._focus_editor()
-        else:
-            self._focus_files()
+    def _refresh_keybar(self) -> None:
+        try:
+            self.query_one("#key-bar", FarKeyBar).refresh()
+        except Exception:
+            pass
+
+    def action_context_f4(self) -> None:
+        self._focus_files()
 
     def action_toggle_fullscreen(self) -> None:
         left = self.query_one("#left-panel", FilePanel)
@@ -311,26 +439,44 @@ class DekodeApp(App):
     # ── File open ─────────────────────────────────────────────────────────────
 
     def open_file(self, path: Path) -> None:
-        editor = self.query_one("#editor", CodeEditor)
-        if editor.is_modified:
-            self.push_screen(
-                ConfirmDialog(f'Unsaved changes. Open "{path.name}" anyway?'),
-                lambda ok: self._do_open(path) if ok else None,
-            )
-        else:
-            self._do_open(path)
+        for i, tab in enumerate(self._tabs):
+            if tab.path == path:
+                self._switch_tab(i)
+                return
+        self._open_new_tab(path)
 
-    def _do_open(self, path: Path) -> None:
+    def _open_new_tab(self, path: Path, switch: bool = True) -> bool:
         editor = self.query_one("#editor", CodeEditor)
-        if editor.load_file(path):
+        if switch:
+            self._save_current_tab_state()
+        if not editor.load_file(path):
+            return False
+        state = TabState(
+            path          = path,
+            text          = editor.text,
+            is_modified   = False,
+            cursor        = (0, 0),
+            file_info     = editor._file_info,
+            extends_class = editor._extends_class,
+        )
+        self._tabs.append(state)
+        if switch:
+            self._active_tab = len(self._tabs) - 1
             self._focus_editor()
             self._refresh_status()
+            self._save_tab_config()
+            self._refresh_tab_bar()
+        return True
 
     # ── Global actions ────────────────────────────────────────────────────────
 
     def action_save_file(self) -> None:
-        if self.query_one("#editor", CodeEditor).save_file():
+        editor = self.query_one("#editor", CodeEditor)
+        if editor.save_file():
+            if self._tabs and 0 <= self._active_tab < len(self._tabs):
+                self._tabs[self._active_tab].is_modified = False
             self._refresh_status()
+            self._refresh_tab_bar()
 
     def action_run_godot(self) -> None:
         editor = self.query_one("#editor", CodeEditor)
@@ -358,8 +504,12 @@ class DekodeApp(App):
 
     def action_close_search(self) -> None:
         bar = self.query_one("#search-bar", SearchBar)
-        bar.remove_class("visible")
-        self._focus_editor()
+        if bar.has_class("visible"):
+            bar.remove_class("visible")
+            self._focus_editor()
+        elif self._active_panel == "editor":
+            self._focus_files()
+        # if already in files panel: do nothing
 
     @on(Input.Submitted, "#search-input")
     def _on_search_submitted(self, event: Input.Submitted) -> None:
@@ -403,19 +553,164 @@ class DekodeApp(App):
 
     @on(CodeEditor.Changed)
     def _on_editor_changed(self, _: object) -> None:
+        editor = self.query_one("#editor", CodeEditor)
+        if self._tabs and 0 <= self._active_tab < len(self._tabs):
+            self._tabs[self._active_tab].is_modified = editor.is_modified
         self._refresh_status()
+        self._refresh_tab_bar()
 
     # ── Quit ──────────────────────────────────────────────────────────────────
 
     def action_quit(self) -> None:
-        editor = self.query_one("#editor", CodeEditor)
-        if editor.is_modified:
+        self._save_current_tab_state()
+        modified = [t for t in self._tabs if t.is_modified]
+        if modified:
+            names = ", ".join(t.path.name for t in modified)
             self.push_screen(
-                ConfirmDialog("Unsaved changes. Quit anyway?"),
+                ConfirmDialog(f"Unsaved changes in: {names}. Quit anyway?"),
                 lambda ok: self.exit() if ok else None,
             )
         else:
             self.exit()
+
+    # ── Tab management ────────────────────────────────────────────────────────
+
+    def _save_current_tab_state(self) -> None:
+        if not self._tabs or not (0 <= self._active_tab < len(self._tabs)):
+            return
+        editor = self.query_one("#editor", CodeEditor)
+        state  = self._tabs[self._active_tab]
+        state.text        = editor.text
+        state.is_modified = editor.is_modified
+        state.cursor      = editor.cursor_location
+
+    def _switch_tab(self, index: int) -> None:
+        if not (0 <= index < len(self._tabs)) or index == self._active_tab:
+            return
+        self._save_current_tab_state()
+        self._active_tab = index
+        state  = self._tabs[index]
+        editor = self.query_one("#editor", CodeEditor)
+        editor.restore_state(
+            path=state.path, text=state.text,
+            file_info=state.file_info, extends_class=state.extends_class,
+            is_modified=state.is_modified, cursor=state.cursor,
+        )
+        self._focus_editor()
+        self._refresh_status()
+        self._save_tab_config()
+        self._refresh_tab_bar()
+
+    def _close_tab(self, index: int) -> None:
+        if not (0 <= index < len(self._tabs)):
+            return
+        if index == self._active_tab:
+            self._save_current_tab_state()
+        state = self._tabs[index]
+        if state.is_modified:
+            self.push_screen(
+                CloseTabDialog(state.path.name),
+                lambda result, idx=index: self._on_close_tab_result(result, idx),
+            )
+        else:
+            self._do_close_tab(index)
+
+    def _on_close_tab_result(self, result: str | None, index: int) -> None:
+        if result == "save":
+            editor = self.query_one("#editor", CodeEditor)
+            if self._active_tab != index:
+                self._save_current_tab_state()
+                self._active_tab = index
+                s = self._tabs[index]
+                editor.restore_state(
+                    path=s.path, text=s.text,
+                    file_info=s.file_info, extends_class=s.extends_class,
+                    is_modified=s.is_modified, cursor=s.cursor,
+                )
+            editor.save_file()
+            self._tabs[index].is_modified = False
+            self._do_close_tab(index)
+        elif result == "dont_save":
+            self._do_close_tab(index)
+
+    def _do_close_tab(self, index: int) -> None:
+        self._tabs.pop(index)
+        editor = self.query_one("#editor", CodeEditor)
+        if not self._tabs:
+            self._active_tab = 0
+            editor.clear_file()
+            self._focus_files()
+        else:
+            new_idx = min(index, len(self._tabs) - 1)
+            self._active_tab = new_idx
+            s = self._tabs[new_idx]
+            editor.restore_state(
+                path=s.path, text=s.text,
+                file_info=s.file_info, extends_class=s.extends_class,
+                is_modified=s.is_modified, cursor=s.cursor,
+            )
+            self._focus_editor()
+        self._refresh_status()
+        self._save_tab_config()
+        self._refresh_tab_bar()
+
+    def _refresh_tab_bar(self) -> None:
+        try:
+            self.query_one("#tab-bar", TabBar).refresh_tabs()
+        except Exception:
+            pass
+
+    def _save_tab_config(self) -> None:
+        try:
+            try:
+                cfg = json.loads(_CFG.read_text(encoding="utf-8"))
+            except Exception:
+                cfg = {}
+            cfg["tabs"]       = [str(t.path) for t in self._tabs]
+            cfg["active_tab"] = self._active_tab
+            _CFG.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _restore_tabs(self) -> None:
+        try:
+            cfg          = json.loads(_CFG.read_text(encoding="utf-8"))
+            raw_tabs     = cfg.get("tabs", [])
+            saved_active = int(cfg.get("active_tab", 0))
+        except Exception:
+            return
+        valid = [Path(p) for p in raw_tabs if Path(p).exists()]
+        if not valid:
+            return
+        for path in valid:
+            self._open_new_tab(path, switch=False)
+        if self._tabs:
+            idx   = min(saved_active, len(self._tabs) - 1)
+            self._active_tab = idx
+            s     = self._tabs[idx]
+            editor = self.query_one("#editor", CodeEditor)
+            editor.restore_state(
+                path=s.path, text=s.text,
+                file_info=s.file_info, extends_class=s.extends_class,
+                is_modified=s.is_modified, cursor=s.cursor,
+            )
+            self._focus_editor()
+            self._refresh_status()
+            self._refresh_tab_bar()
+
+    def action_tab_next(self) -> None:
+        if self._tabs:
+            self._switch_tab((self._active_tab + 1) % len(self._tabs))
+
+    def action_tab_prev(self) -> None:
+        if self._tabs:
+            self._switch_tab((self._active_tab - 1) % len(self._tabs))
+
+    def action_tab_close(self) -> None:
+        self._close_tab(self._active_tab)
+
+    def action_tab_go(self, index: str) -> None:
+        self._switch_tab(int(index) - 1)
 
     # ── Godot API version management ──────────────────────────────────────────
 
@@ -510,6 +805,67 @@ class DekodeApp(App):
                     self.notify("No Godot versions found. Check connection.", severity="warning")
             elif event.state == WorkerState.ERROR:
                 self.notify("Failed to fetch version list.", severity="error")
+
+
+# ── Close tab dialog ─────────────────────────────────────────────────────────
+
+class CloseTabDialog(ModalScreen[str | None]):
+    DEFAULT_CSS = """
+    CloseTabDialog { align: center middle; }
+    CloseTabDialog #ctd-box {
+        background: #000080; border: solid #00ffff;
+        padding: 1 2; width: 52; height: auto;
+    }
+    CloseTabDialog #ctd-msg { color: white; padding: 0 0 1 0; }
+    CloseTabDialog #ctd-buttons { height: auto; margin-top: 1; }
+    CloseTabDialog Button {
+        background: #00aaaa; color: #000000;
+        border: none; margin-right: 1; min-width: 14;
+    }
+    CloseTabDialog Button:hover, CloseTabDialog Button.-active {
+        background: white; color: #000000;
+    }
+    """
+    BINDINGS = [
+        Binding("s",      "save",      show=False),
+        Binding("d",      "dont_save", show=False),
+        Binding("c",      "cancel",    show=False),
+        Binding("escape", "cancel",    show=False),
+    ]
+
+    def __init__(self, filename: str) -> None:
+        super().__init__()
+        self._filename = filename
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="ctd-box"):
+            yield Static(f"Unsaved changes in {self._filename}", id="ctd-msg")
+            with Horizontal(id="ctd-buttons"):
+                yield Button("[S] Save",       id="ctd-save")
+                yield Button("[D] Don't Save", id="ctd-dont")
+                yield Button("[C] Cancel",     id="ctd-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#ctd-save", Button).focus()
+
+    def on_key(self, event) -> None:
+        if event.key in ("left", "right"):
+            btns = list(self.query(Button))
+            foc  = self.focused
+            idx  = btns.index(foc) if foc in btns else 0
+            btns[(idx + (1 if event.key == "right" else -1)) % len(btns)].focus()
+            event.stop()
+
+    def action_save(self)      -> None: self.dismiss("save")
+    def action_dont_save(self) -> None: self.dismiss("dont_save")
+    def action_cancel(self)    -> None: self.dismiss(None)
+
+    @on(Button.Pressed, "#ctd-save")
+    def _on_save(self)   -> None: self.dismiss("save")
+    @on(Button.Pressed, "#ctd-dont")
+    def _on_dont(self)   -> None: self.dismiss("dont_save")
+    @on(Button.Pressed, "#ctd-cancel")
+    def _on_cancel(self) -> None: self.dismiss(None)
 
 
 # ── Download progress modal ───────────────────────────────────────────────────

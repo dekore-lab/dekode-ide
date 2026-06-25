@@ -807,6 +807,48 @@ class CodeEditor(TextArea):
             self.notify(f"Save failed: {exc}", severity="error")
             return False
 
+    def clear_file(self) -> None:
+        """Reset editor to empty, no-file state."""
+        self._suppress_change = True
+        self.load_text("")
+        self.file_path = None
+        self.is_modified = False
+        self._file_info = None
+        self._extends_class = ""
+        self._rebuild_class_completions()
+        self.call_after_refresh(self._end_suppress)
+
+    def restore_state(
+        self,
+        path: Path,
+        text: str,
+        file_info,
+        extends_class: str,
+        is_modified: bool,
+        cursor: tuple[int, int],
+    ) -> None:
+        """Restore a previously saved tab state without re-reading from disk."""
+        self._suppress_change = True
+        self.load_text(text)
+        self.file_path = path
+        self.is_modified = is_modified
+        self._file_info = file_info
+        self._extends_class = extends_class
+        self._rebuild_highlights()
+        self._rebuild_class_completions()
+        self._cursor_to_restore = cursor
+        self.call_after_refresh(self._end_suppress)
+        self.call_after_refresh(self._restore_cursor_after_load)
+
+    def _restore_cursor_after_load(self) -> None:
+        curs = getattr(self, "_cursor_to_restore", None)
+        if curs is not None:
+            try:
+                self.move_cursor(curs)
+            except Exception:
+                pass
+            del self._cursor_to_restore
+
     # ── Search ────────────────────────────────────────────────────────────────
 
     def search(self, query: str) -> int:

@@ -496,6 +496,9 @@ class ConfirmDialog(ModalScreen[bool]):
                 yield Button("Yes", variant="error", id="yes")
                 yield Button("No", variant="primary", id="no")
 
+    def on_mount(self) -> None:
+        self.query_one("#yes", Button).focus()
+
     @on(Button.Pressed, "#yes")
     def _yes(self) -> None:
         self.dismiss(True)
@@ -507,6 +510,12 @@ class ConfirmDialog(ModalScreen[bool]):
     def on_key(self, event) -> None:
         if event.key == "escape":
             self.dismiss(False)
+        elif event.key in ("left", "right"):
+            btns = list(self.query(Button))
+            foc  = self.focused
+            idx  = btns.index(foc) if foc in btns else 0
+            btns[(idx + (1 if event.key == "right" else -1)) % len(btns)].focus()
+            event.stop()
 
 
 class ExtendsDialog(ModalScreen[str | None]):
